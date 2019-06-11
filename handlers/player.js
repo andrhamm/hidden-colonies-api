@@ -20,7 +20,17 @@ export const handler = async (event) => {
 
   console.log(`cookies: ${JSON.stringify(cookies, null, 2)}`);
 
-  const uuid = uuidv4();
+  let uuid;
+  if (cookies.player) {
+    ({ uuid } = cookies.player);
+  } else {
+    uuid = uuidv4();
+
+    cookies.player = {
+      uuid,
+    };
+  }
+
 
   const setCookieHeader = writeCookies(cookies, cookieKeys);
 

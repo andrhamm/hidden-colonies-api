@@ -3,5 +3,5 @@
   "presets": [
     "airbnb"
   ],
-  "plugins": ["source-map-support", "transform-object-rest-spread"]
+  "plugins": ["source-map-support", "@babel/plugin-proposal-object-rest-spread"]
 }

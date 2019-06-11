@@ -31,14 +31,14 @@ provider:
         - ""
         - - Ref: ApiGatewayRestApi
           - ".execute-api.${self:provider.region}.amazonaws.com/${self:provider.stage}"
-    ENCRYPTION_KEY: ${file(./secrets.${self:provider.stage}.yaml):encryptionKey}
-    SIGNING_KEY: ${file(./secrets.${self:provider.stage}.yaml):signingKey}
+    ENCRYPTION_KEY: ${file(./secrets.${self:provider.stage}.yml):encryptionKey}
+    SIGNING_KEY: ${file(./secrets.${self:provider.stage}.yml):signingKey}
   # iamRoleStatements:
 
 package:
   individually: true
   exclude:
-    - secrets.*.yaml
+    - secrets.*.yml
 
 functions:
   player:

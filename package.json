@@ -30,6 +30,7 @@
     "webpack-node-externals": "^1.7.2"
   },
   "dependencies": {
+    "@babel/plugin-proposal-object-rest-spread": "^7.4.4",
     "aws-sdk": "^2.454.0",
     "cookie": "^0.4.0",
     "lodash.camelcase": "^4.3.0",
