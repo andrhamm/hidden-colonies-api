@@ -1,0 +1,53 @@
+service:
+  name: hidden-colonies
+
+frameworkVersion: '>=1.44.1 <2.0.0'
+
+plugins:
+  - serverless-webpack
+  - serverless-iam-roles-per-function
+  - serverless-pseudo-parameters
+  # - serverless-cloudformation-sub-variables
+
+custom:
+  webpack:
+    webpackConfig: ./webpack.config.js
+    includeModules:
+      forceExclude:
+        - aws-sdk
+  arn_prefix_lambda_function: arn:aws:lambda:#{AWS::Region}:#{AWS::AccountId}:function:${self:service.name}-${self:provider.stage}
+
+provider:
+  name: aws
+  runtime: nodejs8.10
+  stage: ${opt:stage, 'dev'}
+  profile: ${opt:profile, 'tremorlab'}
+  region: us-east-1
+  environment:
+    # NOTE: this is useful for local invocations and has no affect in deployed environments
+    AWS_PROFILE: ${self:provider.profile}
+    API_BASE:
+      Fn::Join:
+        - ""
+        - - Ref: ApiGatewayRestApi
+          - ".execute-api.${self:provider.region}.amazonaws.com/${self:provider.stage}"
+    ENCRYPTION_KEY: ${file(./secrets.${self:provider.stage}.yaml):encryptionKey}
+    SIGNING_KEY: ${file(./secrets.${self:provider.stage}.yaml):signingKey}
+  # iamRoleStatements:
+
+package:
+  individually: true
+  exclude:
+    - secrets.*.yaml
+
+functions:
+  player:
+    handler: handlers/player.handler
+    description: Gets the user GUID
+    events:
+      - http:
+          path: player
+          method: get
+
+resources:
+  Resources:

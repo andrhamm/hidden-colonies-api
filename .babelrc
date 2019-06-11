@@ -1,0 +1,7 @@
+{
+  "comments": false,
+  "presets": [
+    "airbnb"
+  ],
+  "plugins": ["source-map-support", "transform-object-rest-spread"]
+}
