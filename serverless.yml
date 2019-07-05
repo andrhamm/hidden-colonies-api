@@ -1,5 +1,5 @@
 service:
-  name: hidden-colonies
+  name: colonies
 
 frameworkVersion: '>=1.44.1 <2.0.0'
 
@@ -7,15 +7,44 @@ plugins:
   - serverless-webpack
   - serverless-iam-roles-per-function
   - serverless-pseudo-parameters
+  # - serverless-domain-manager
+  - serverless-plugin-custom-domain
   # - serverless-cloudformation-sub-variables
 
 custom:
+  domain: "colonies-api.andrhamm.com"
+  serverless-iam-roles-per-function:
+    defaultInherit: true
+  # customDomain:
+  #   domainName: colonies-api.andrhamm.com
+  #   stage: ${self:provider.stage}
+  #   basePath: ''
+  #   certificateName: '*.andrhamm.com'
+  #   createRoute53Record: true
+  #   endpointType: 'regional'
   webpack:
     webpackConfig: ./webpack.config.js
     includeModules:
       forceExclude:
         - aws-sdk
+  dynamodb_table_name_games: ${self:service.name}-${self:provider.stage}-games-2
+  dynamodb_index_name_games_opponent: opponent
+  # dynamodb_index_name_games_room: ${self:custom.dynamodb_table_name_games}-by-room
   arn_prefix_lambda_function: arn:aws:lambda:#{AWS::Region}:#{AWS::AccountId}:function:${self:service.name}-${self:provider.stage}
+  arn_api_gateway_rest_api:
+    Fn::Join:
+      - "/"
+      - - Fn::Join: [":", ["arn:aws:execute-api", {"Ref":"AWS::Region"}, {"Ref":"AWS::AccountId"}, {"Ref": "ApiGatewayRestApi"}, "${self:provider.stage}"]]
+        - "*"
+  cognito_user_pool_arn:
+    Fn::Join:
+      - ''
+      - - 'arn:aws:cognito-idp:'
+        - ${self:provider.region}
+        - ':'
+        - Ref: AWS::AccountId
+        - ':userpool/'
+        - Ref: CognitoUserPool
 
 provider:
   name: aws
@@ -23,6 +52,9 @@ provider:
   stage: ${opt:stage, 'dev'}
   profile: ${opt:profile, 'tremorlab'}
   region: us-east-1
+  logs:
+    restApi: true
+    # websocket: true
   environment:
     # NOTE: this is useful for local invocations and has no affect in deployed environments
     AWS_PROFILE: ${self:provider.profile}
@@ -33,21 +65,281 @@ provider:
           - ".execute-api.${self:provider.region}.amazonaws.com/${self:provider.stage}"
     ENCRYPTION_KEY: ${file(./secrets.${self:provider.stage}.yml):encryptionKey}
     SIGNING_KEY: ${file(./secrets.${self:provider.stage}.yml):signingKey}
-  # iamRoleStatements:
-
+    DYNAMODB_PARTITION_COUNT_GAMES: 4
+    DYNAMODB_TABLE_NAME_GAMES: ${self:custom.dynamodb_table_name_games}
+    COGNITO_USER_POOL_ID: !Ref CognitoUserPool
+  iamRoleStatements:
+    - Effect: Allow
+      Action:
+        - execute-api:ManageConnections
+      Resource:
+        - "arn:aws:execute-api:*:*:**/@connections/*"
+        # - "arn:aws:execute-api:#{AWS::Region}:#{AWS::AccountId}:#{!Ref ApiGatewayRestApi}/${self:provider.stage}/*"
+    - Effect: Allow
+      Action:
+        - cognito-idp:ListUsers
+        - cognito-idp:AdminGetUser
+      Resource:
+        - ${self:custom.cognito_user_pool_arn}
 package:
   individually: true
   exclude:
     - secrets.*.yml
 
 functions:
-  player:
-    handler: handlers/player.handler
-    description: Gets the user GUID
+  # websocketAuth:
+  #   handler: handlers/websockets-auth.handler
+  # websocketDefault:
+  #   handler: handlers/websockets.routeDefault
+  #   events:
+  #     - websocket: $default
+  # websocketDisconnect:
+  #   handler: handlers/websockets.routeDisconnect
+  #   events:
+  #     - websocket: $disconnect
+  # websocketConnect:
+  #   handler: handlers/websockets.routeConnect
+  #   events:
+  #     - websocket:
+  #         route: $connect
+  #         authorizer:
+  #           name: websocketAuth
+  #           identitySource:
+  #             - 'route.request.header.Auth'
+  #             - 'route.request.querystring.auth'
+
+  # test:
+  #   handler: handlers/test.post
+  #   events:
+  #     - http:
+  #         path: test
+  #         method: post
+
+  # TODO: player username lookup endpoint, predictive search
+  #
+  gameCreate:
+    handler: handlers/game.post
+    description: Create a new game
     events:
       - http:
-          path: player
+          path: game
+          method: post
+          cors: ${file(api/cors.yml)}
+          authorizer: aws_iam
+          request:
+            schema:
+              application/json: ${file(api/game-create.json)}
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:PutItem
+        Resource:
+          - Fn::GetAtt: [ GamesDynamoDbTable, Arn ]
+
+  gameRead:
+    handler: handlers/game.get
+    description: Retreive a game by ID
+    events:
+      - http:
+          path: game/{id}
           method: get
+          cors: ${file(api/cors.yml)}
+          authorizer: aws_iam
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:GetItem
+        Resource:
+          - Fn::GetAtt: [ GamesDynamoDbTable, Arn ]
 
 resources:
   Resources:
+    GamesDynamoDbTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:custom.dynamodb_table_name_games}
+        BillingMode: PAY_PER_REQUEST
+        StreamSpecification:
+          StreamViewType: NEW_AND_OLD_IMAGES
+        AttributeDefinitions:
+          - AttributeName: partitionKey
+            AttributeType: S
+          - AttributeName: sortKey
+            AttributeType: N
+        KeySchema:
+          # `${[player1Guid, player2Guid].sort().join(':')}`
+          # exmaple: b6971e08-5c31-41b0-b061-482b41c98460:f5df8afe-b6bd-4498-a26c-bb5c1d587cc8
+          - AttributeName: partitionKey
+            KeyType: HASH
+          # `${gameStartTimeMs}`
+          - AttributeName: sortKey
+            KeyType: RANGE
+        # GlobalSecondaryIndexes:
+        #   - IndexName: ${self:custom.dynamodb_index_name_games_room}
+        #     KeySchema:
+        #       - AttributeName: room
+        #         KeyType: HASH
+        #     Projection:
+        #       ProjectionType: KEYS_ONLY
+    CognitoUserPool:
+      Type: AWS::Cognito::UserPool
+      Properties:
+        UserPoolName: hiddenColoniesUserPool
+        MfaConfiguration: OFF
+        AutoVerifiedAttributes:
+          - email
+        Schema:
+          - Name: name
+            AttributeDataType: String
+            Mutable: true
+            Required: true
+          - Name: email
+            AttributeDataType: String
+            Mutable: false
+            Required: true
+        Policies:
+          PasswordPolicy:
+            MinimumLength: 6
+            RequireLowercase: false
+            RequireNumbers: false
+            RequireSymbols: false
+            RequireUppercase: false
+    CognitoUserPoolClient:
+      Type: AWS::Cognito::UserPoolClient
+      Properties:
+        ClientName: hiddenColoniesUserPoolClient
+        GenerateSecret: false
+        UserPoolId:
+          Ref: CognitoUserPool
+    CognitoIdentityPool:
+      Type: AWS::Cognito::IdentityPool
+      Properties:
+        IdentityPoolName: hiddenColoniesUserIdentityPool
+        AllowUnauthenticatedIdentities: false
+        CognitoIdentityProviders:
+          - ClientId:
+              Ref: CognitoUserPoolClient
+            ProviderName:
+              Fn::GetAtt: [CognitoUserPool, ProviderName]
+    CognitoIdentityPoolRoles:
+      Type: AWS::Cognito::IdentityPoolRoleAttachment
+      Properties:
+        IdentityPoolId:
+          Ref: CognitoIdentityPool
+        Roles:
+          authenticated:
+            Fn::GetAtt: [CognitoAuthRole, Arn]
+          unauthenticated:
+            Fn::GetAtt: [CognitoUnauthRole, Arn]
+    CognitoAuthRole:
+      Type: AWS::IAM::Role
+      Properties:
+        RoleName: appAuthRole
+        Path: /
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: "Allow"
+              Principal:
+                Federated: "cognito-identity.amazonaws.com"
+              Action:
+                - "sts:AssumeRoleWithWebIdentity"
+              Condition:
+                StringEquals:
+                  "cognito-identity.amazonaws.com:aud":
+                    Ref: CognitoIdentityPool
+                "ForAnyValue:StringLike":
+                  "cognito-identity.amazonaws.com:amr": authenticated
+        Policies:
+          - PolicyName: "CognitoAuthorizedPolicy"
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: "Allow"
+                  Action:
+                    - "cognito-sync:*"
+                    - "cognito-identity:*"
+                    - "mobileanalytics:PutEvents"
+                  Resource: "*"
+                - Effect: "Allow"
+                  Action:
+                    - "execute-api:Invoke"
+                  Resource:
+                    Fn::Join:
+                      - ''
+                      -
+                        - 'arn:aws:execute-api:'
+                        - Ref: AWS::Region
+                        - ':'
+                        - Ref: AWS::AccountId
+                        - ':'
+                        - Ref: ApiGatewayRestApi
+                        - '/*'
+    CognitoUnauthRole:
+      Type: AWS::IAM::Role
+      Properties:
+        RoleName: appUnauthRole
+        Path: /
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: "Allow"
+              Principal:
+                Federated: "cognito-identity.amazonaws.com"
+              Action:
+                - "sts:AssumeRoleWithWebIdentity"
+              Condition:
+                StringEquals:
+                  "cognito-identity.amazonaws.com:aud":
+                    Ref: CognitoIdentityPool
+                "ForAnyValue:StringLike":
+                  "cognito-identity.amazonaws.com:amr": unauthenticated
+        Policies:
+          - PolicyName: "CognitoUnauthorizedPolicy"
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: "Allow"
+                  Action:
+                    - "cognito-sync:*"
+                    - "cognito-identity:*"
+                    # - "mobileanalytics:PutEvents"
+                  Resource: "*"
+    # CognitoAuthorizer:
+    #   DependsOn:
+    #     - ApiGatewayRestApi
+    #   Type: AWS::ApiGateway::Authorizer
+    #   Properties:
+    #     AuthorizerResultTtlInSeconds: 300
+    #     IdentitySource: method.request.header.Authorization
+    #     RestApiId:
+    #       Ref: ApiGatewayRestApi
+    #     Type: COGNITO_USER_POOLS
+    #     Name: Authorizer
+    #     ProviderARNs:
+    #       - Fn::Join:
+    #         - ''
+    #         - - 'arn:aws:cognito-idp:'
+    #           - ${self:provider.region}
+    #           - ':'
+    #           - Ref: AWS::AccountId
+    #           - ':userpool/'
+    #           - Ref: CognitoUserPool
+    GatewayResponseDefault4XX:
+      Type: 'AWS::ApiGateway::GatewayResponse'
+      Properties:
+        ResponseParameters:
+           gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+           gatewayresponse.header.Access-Control-Allow-Headers: "'*'"
+        ResponseType: DEFAULT_4XX
+        RestApiId:
+          Ref: 'ApiGatewayRestApi'
+    GatewayResponseDefault5XX:
+      Type: 'AWS::ApiGateway::GatewayResponse'
+      Properties:
+        ResponseParameters:
+           gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+           gatewayresponse.header.Access-Control-Allow-Headers: "'*'"
+        ResponseType: DEFAULT_5XX
+        RestApiId:
+          Ref: 'ApiGatewayRestApi'
