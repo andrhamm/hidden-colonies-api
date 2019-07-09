@@ -1,10 +1,11 @@
-import { signAndEncrypt, decryptAndVerify } from '../lib/cookie';
 import { dealNewGame } from '../lib/deck';
-import { dynamodb, dynamodbMarshall, dynamodbUnmarshall } from '../lib/aws-clients';
+import { dynamodb, dynamodbMarshall } from '../lib/aws-clients';
 import {
   getCurrentUserSub, getUserByUsername, getUserAttribute, getUserBySub,
 } from '../lib/cognito';
 import { simpleError, simpleResponse } from '../lib/api';
+
+import { loadGame, sanitizeGame, getPlayerIndex } from '../lib/common';
 /* eslint-disable no-underscore-dangle */
 
 const {
@@ -14,13 +15,19 @@ const {
   SIGNING_KEY,
 } = process.env;
 
-const cookieKeys = {
-  encryptionKey: ENCRYPTION_KEY,
-  signingKey: SIGNING_KEY,
+const ENCRYPTION_OPTS = {
+  ENCRYPTION_KEY,
+  SIGNING_KEY,
 };
 
 export const post = async (event) => {
   console.log(`post event: ${JSON.stringify(event, null, 2)}`);
+
+  if (!event.headers['content-type'].startsWith('application/json')) {
+    return simpleError(event, 415, 'Invalid content-type. Must begin with "application/json"');
+  }
+
+  const timestamp = event.requestContext.requestTimeEpoch;
 
   const uuid = getCurrentUserSub(event);
 
@@ -36,24 +43,24 @@ export const post = async (event) => {
 
   if (!user) {
     // shouldn't ever happen but maybe forcing a logout+login will fix?
-    return simpleError(401, 'User not found.');
+    return simpleError(event, 401, 'User not found.');
   }
 
   if (!opponentUser) {
-    return simpleError(400, 'Opponent not found.');
+    return simpleError(event, 400, 'Opponent not found.');
   }
 
   const opponentUuid = getUserAttribute(opponentUser, 'sub');
 
   if (uuid === opponentUuid) {
-    return simpleError(400, 'Invalid opponent.');
+    return simpleError(event, 400, 'Invalid opponent.');
   }
 
+  // TODO: validate no other active game with this opponent
+
   const cards = dealNewGame();
-  const { hands: [hand], played, discarded } = cards;
-  const createdAt = Date.now();
   const partitionKey = [uuid, opponentUuid].sort().join(':');
-  const sortKey = createdAt;
+  const sortKey = timestamp;
   const id = `${partitionKey}::${sortKey}`;
 
   const firstPlayer = Math.floor(Math.random() * 2);
@@ -72,12 +79,11 @@ export const post = async (event) => {
   ];
 
   const gameCommon = {
-    id: signAndEncrypt(id, cookieKeys),
     turn: 0,
     firstPlayer,
     turns: [],
     cards,
-    createdAt,
+    createdAt: timestamp,
   };
 
   const gameSecret = {
@@ -88,94 +94,35 @@ export const post = async (event) => {
     cards,
   };
 
+  const game = {
+    ...gameCommon,
+    ...gameSecret,
+  };
+
   await dynamodb.putItem({
     TableName: DYNAMODB_TABLE_NAME_GAMES,
     ExpressionAttributeNames: {
       '#SORT': 'sortKey',
     },
-    Item: dynamodbMarshall({
-      ...gameCommon,
-      ...gameSecret,
-    }),
+    Item: dynamodbMarshall(game),
     ConditionExpression: 'attribute_not_exists(#SORT)',
     // ReturnValues only supports ALL_OLD or NONE for putItem
   }).promise();
 
-  // cookies._colonies.games.push({
-  //   id: gameId,
-  //   opponent,
-  //   cards,
-  //   createdAt: Date.now(),
-  // });
-
-  // const setCookieHeader = writeCookies(cookies, cookieKeys);
-  return simpleResponse(event, {
-    ...gameCommon,
-    players: players.reduce((acc, player) => {
-      const { username, first } = player;
-      acc.push({
-        username,
-        first,
-      });
-      return acc;
-    }, []),
-    cards: {
-      hand,
-      played,
-      discarded,
-    },
-  });
+  return simpleResponse(event, sanitizeGame(game, 0, ENCRYPTION_OPTS));
 };
 
 export const get = async (event) => {
   console.log(`get event: ${JSON.stringify(event, null, 2)}`);
-  const { id } = event.pathParameters;
 
-  const [partitionKey, sortKeyStr] = decryptAndVerify(id, cookieKeys).split('::');
-  const sortKey = +sortKeyStr;
-  const uuid = getCurrentUserSub(event);
-
-  if (!partitionKey.split(':').includes(uuid)) {
-    return simpleError(400, 'Invalid game id.');
-  }
-
-  const {
-    Item: gameMarshalled,
-  } = await dynamodb.getItem({
-    TableName: DYNAMODB_TABLE_NAME_GAMES,
-    Key: dynamodbMarshall({
-      partitionKey,
-      sortKey,
-    }),
-  }).promise();
-
-  const {
-    turn,
-    firstPlayer,
-    players,
-    turns,
-    cards,
-  } = dynamodbUnmarshall(gameMarshalled);
-
-  const { hands: [hand], played, discarded } = cards;
-
-  return simpleResponse(event, {
-    id,
-    turn,
-    firstPlayer,
-    players: players.reduce((acc, player) => {
-      const { username, first } = player;
-      acc.push({
-        username,
-        first,
-      });
-      return acc;
-    }, []),
-    turns,
-    cards: {
-      hand,
-      played,
-      discarded,
-    },
+  const game = await loadGame(event, {
+    DYNAMODB_TABLE_NAME_GAMES,
+    ...ENCRYPTION_OPTS,
   });
+
+  const playerIndex = getPlayerIndex(event, game);
+
+  // TODO: return card hints, which cards can be played
+
+  return simpleResponse(event, sanitizeGame(game, playerIndex, ENCRYPTION_OPTS));
 };

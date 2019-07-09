@@ -152,6 +152,26 @@ functions:
         Resource:
           - Fn::GetAtt: [ GamesDynamoDbTable, Arn ]
 
+  turnCreate:
+    handler: handlers/turn.post
+    description: Submit a new turn for a game
+    events:
+      - http:
+          path: game/{id}/turn
+          method: post
+          cors: ${file(api/cors.yml)}
+          authorizer: aws_iam
+          request:
+            schema:
+              application/json: ${file(api/turn-create.json)}
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:GetItem
+          - dynamodb:UpdateItem
+        Resource:
+          - Fn::GetAtt: [ GamesDynamoDbTable, Arn ]
+
 resources:
   Resources:
     GamesDynamoDbTable:

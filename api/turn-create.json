@@ -1,0 +1,19 @@
+{
+  "definitions": {},
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "title": "The Root Schema",
+  "required": [
+    "turn",
+    "action"
+  ],
+  "properties": {
+    "turn": {
+      "type": "integer"
+    },
+    "action": {
+      "type": "string",
+      "pattern": "^(P|D)(([0-4]):([0-9]|1[01]))(::(([0-4]):([0-9]|1[01])))?$"
+    }
+  }
+}
