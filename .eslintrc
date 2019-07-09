@@ -2,6 +2,9 @@
   "parser": "babel-eslint",
   "extends": "airbnb-base",
   "rules": {
+    "no-unused-vars": ["error", {
+      "varsIgnorePattern": "(^_)"
+    }],
     "no-console": "off",
     "import/prefer-default-export": "off",
     "import/no-unresolved": [
