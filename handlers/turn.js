@@ -1,5 +1,7 @@
 import { dynamodb, dynamodbMarshall, dynamodbUnmarshall } from '../lib/aws-clients';
-import { loadGame, sanitizeGame, getPlayerIndex } from '../lib/common';
+import {
+  loadGame, sanitizeGame, getPlayerIndex, isMyTurn,
+} from '../lib/common';
 import { simpleError, simpleResponse } from '../lib/api';
 import { isWagerCard } from '../lib/deck';
 
@@ -46,8 +48,7 @@ export const post = async (event) => {
   const playerIndex = getPlayerIndex(event, game);
 
   // validate it is this player's turn
-  const turnMod = firstPlayer === playerIndex ? 0 : 1;
-  if (turn % 2 !== turnMod) {
+  if (!isMyTurn(turn, firstPlayer, playerIndex)) {
     return simpleError(event, 400, 'It is not your turn.');
   }
 
