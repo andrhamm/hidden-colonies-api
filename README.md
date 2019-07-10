@@ -1,3 +1,9 @@
+# Notes
+
+## `id` vs `key`
+
+The value of `key` is an encrypted value that will be different on each response. For this reason, `id` is provided, which is a static unchanging 16 character string. Fetching a game by `id` will always be slower than `key`. This is because, on the backend, a query must first be run to retrieve the `key` given the `id`, then the normal `key`-based lookup is performed.
+
 # ENDPOINTS
 
 ## Create a new game
@@ -11,12 +17,14 @@ POST /games
 
 Where `opponent` is a valid username for an existing user.
 
-## Fetch a game by ID
+## Fetch a game by ID or key
 
 ```
 Accept: application/json
-GET /games/{id}
+GET /games/{idOrKey}
 ```
+
+Note: See note about `id` vs `key` in the Notes section.
 
 ## Fetch recent games
 
@@ -32,7 +40,7 @@ The response contains truncated game objects.
 ```
 Accept: application/json
 Content-Type: application/json
-POST /games/{id}/turn
+POST /games/{key}/turn
 {"action":"P0:3", "draw": "4:1", "turn":0}
 ```
 

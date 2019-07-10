@@ -1,6 +1,6 @@
 import { dynamodb, dynamodbMarshall, dynamodbUnmarshall } from '../lib/aws-clients';
 import {
-  loadGame, sanitizeGame, getPlayerIndex, isMyTurn,
+  loadGameByEncryptedKey, sanitizeGame, getPlayerIndex, isMyTurn,
 } from '../lib/common';
 import { getCurrentUserSub } from '../lib/cognito';
 import { simpleError, simpleResponse } from '../lib/api';
@@ -24,11 +24,11 @@ export const post = async (event) => {
     return simpleError(event, 415, 'Invalid content-type. Must begin with "application/json"');
   }
 
-  const { id: encryptedId } = event.pathParameters;
+  const { idOrEncryptedKey: encryptedKey } = event.pathParameters;
 
   const uuid = getCurrentUserSub(event);
 
-  const game = await loadGame(encryptedId, uuid, {
+  const game = await loadGameByEncryptedKey(encryptedKey, uuid, {
     DYNAMODB_TABLE_NAME_GAMES,
     ...ENCRYPTION_OPTS,
   });

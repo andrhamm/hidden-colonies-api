@@ -28,6 +28,7 @@ custom:
       forceExclude:
         - aws-sdk
   dynamodb_table_name_games: ${self:service.name}-${self:provider.stage}-games-3
+  dynamodb_index_name_games_id: gameId
   dynamodb_index_name_games_opponent: opponent
   # dynamodb_index_name_games_room: ${self:custom.dynamodb_table_name_games}-by-room
   arn_prefix_lambda_function: arn:aws:lambda:#{AWS::Region}:#{AWS::AccountId}:function:${self:service.name}-${self:provider.stage}
@@ -67,6 +68,7 @@ provider:
     SIGNING_KEY: ${file(./secrets.${self:provider.stage}.yml):signingKey}
     DYNAMODB_PARTITION_COUNT_GAMES: 4
     DYNAMODB_TABLE_NAME_GAMES: ${self:custom.dynamodb_table_name_games}
+    DYNAMODB_INDEX_NAME_GAMES_ID: ${self:custom.dynamodb_index_name_games_id}
     DYNAMODB_INDEX_NAME_GAMES_OPPONENT: ${self:custom.dynamodb_index_name_games_opponent}
     COGNITO_USER_POOL_ID: !Ref CognitoUserPool
   iamRoleStatements:
@@ -139,10 +141,10 @@ functions:
 
   gameRead:
     handler: handlers/game.get
-    description: Retreive a game by ID
+    description: Retreive a game by ID or encrypted key
     events:
       - http:
-          path: games/{id}
+          path: games/{idOrEncryptedKey}
           method: get
           cors: ${file(api/cors.yml)}
           authorizer: aws_iam
@@ -150,8 +152,13 @@ functions:
       - Effect: Allow
         Action:
           - dynamodb:GetItem
+          - dynamodb:Query
         Resource:
           - Fn::GetAtt: [ GamesDynamoDbTable, Arn ]
+          - Fn::Join:
+            - ""
+            - - Fn::GetAtt: [ GamesDynamoDbTable, Arn ]
+              - "/index/${self:custom.dynamodb_index_name_games_id}"
 
   gameList:
     handler: handlers/game.list
@@ -166,6 +173,7 @@ functions:
       - Effect: Allow
         Action:
           - dynamodb:Query
+          - dynamodb:GetItem
         Resource:
           - Fn::GetAtt: [ GamesDynamoDbTable, Arn ]
           - Fn::Join:
@@ -178,7 +186,7 @@ functions:
     description: Submit a new turn for a game
     events:
       - http:
-          path: games/{id}/turn
+          path: games/{idOrEncryptedKey}/turn
           method: post
           cors: ${file(api/cors.yml)}
           authorizer: aws_iam
@@ -211,6 +219,8 @@ resources:
             AttributeType: S
           - AttributeName: opponentSortKey
             AttributeType: S
+          - AttributeName: id
+            AttributeType: S
         KeySchema:
           # `${player1Guid}`
           # exmaple: b6971e08-5c31-41b0-b061-482b41c98460
@@ -220,6 +230,15 @@ resources:
           - AttributeName: sortKey
             KeyType: RANGE
         GlobalSecondaryIndexes:
+          - IndexName: ${self:custom.dynamodb_index_name_games_id}
+            # TODO: Make this the primary table key
+            KeySchema:
+              - AttributeName: id
+                KeyType: HASH
+            Projection:
+              ProjectionType: INCLUDE
+              NonKeyAttributes:
+                - key
           - IndexName: ${self:custom.dynamodb_index_name_games_opponent}
             KeySchema:
               # `${player2Guid}`
@@ -233,6 +252,7 @@ resources:
               ProjectionType: INCLUDE
               NonKeyAttributes:
                 - id
+                - key
                 - turn
                 - firstPlayer
                 - players

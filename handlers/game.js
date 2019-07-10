@@ -1,3 +1,5 @@
+import nanoidLocaleEn from 'nanoid-good/locale/en';
+
 import { dealNewGame } from '../lib/deck';
 import { dynamodb, dynamodbMarshall } from '../lib/aws-clients';
 import {
@@ -5,14 +7,27 @@ import {
 } from '../lib/cognito';
 import { simpleError, simpleResponse } from '../lib/api';
 import {
-  loadGame, loadGames, sanitizeGame, sanitizeGameList,
+  loadGame, loadGameByEncryptedKey, loadGames, sanitizeGame, sanitizeGameList,
 } from '../lib/common';
-/* eslint-disable no-underscore-dangle */
+
+// const nanoid = require('nanoid-good')(nanoidLocaleEn);
+const nanoidGenerate = require('nanoid-good/generate')(nanoidLocaleEn);
+
+const nanoidAlphabet = '23456789abcdefghijkmnpqrstwxyz';
+const nanoidLength = 16;
+/* See https://zelark.github.io/nano-id-cc/
+ * with this alphabet and length...
+ * generating 1 ID/second... ~3k years needed to have 1% probability of at least one collision
+ * 10 ID/s = ~295 years
+ * 100 ID/s = ~29 years
+ * TODO: increase length when we go viral :P
+* */
 
 const {
   COGNITO_USER_POOL_ID,
   DYNAMODB_TABLE_NAME_GAMES,
   DYNAMODB_INDEX_NAME_GAMES_OPPONENT,
+  DYNAMODB_INDEX_NAME_GAMES_ID,
   ENCRYPTION_KEY,
   SIGNING_KEY,
 } = process.env;
@@ -67,7 +82,9 @@ export const post = async (event) => {
   const opponentPartitionKey = opponentUuid;
   const opponentSortKey = `${uuid}:${timestamp}`;
 
-  const id = `${partitionKey}::${sortKey}`;
+  const key = `${partitionKey}::${sortKey}`;
+
+  const id = nanoidGenerate(nanoidAlphabet, nanoidLength);
 
   const firstPlayer = Math.floor(Math.random() * 2);
 
@@ -94,6 +111,7 @@ export const post = async (event) => {
 
   const gameSecret = {
     id,
+    key,
     partitionKey,
     sortKey,
     opponentPartitionKey,
@@ -123,16 +141,23 @@ export const post = async (event) => {
 export const get = async (event) => {
   console.log(`get event: ${JSON.stringify(event, null, 2)}`);
 
-  const { id: encryptedId } = event.pathParameters;
-
   const uuid = getCurrentUserSub(event);
 
-  const game = await loadGame(encryptedId, uuid, {
+  const { idOrEncryptedKey } = event.pathParameters;
+
+  const idPattern = new RegExp(`^[${nanoidAlphabet}]{${nanoidLength}}$`);
+
+  const loadFn = idOrEncryptedKey.match(idPattern) ? loadGame : loadGameByEncryptedKey;
+
+  const game = await loadFn(idOrEncryptedKey, uuid, {
     DYNAMODB_TABLE_NAME_GAMES,
+    DYNAMODB_INDEX_NAME_GAMES_ID,
     ...ENCRYPTION_OPTS,
   });
 
-  // TODO: return card hints, which cards can be played
+  if (!game) {
+    return simpleError(event, 404, 'Game not found.');
+  }
 
   return simpleResponse(event, sanitizeGame(game, uuid, ENCRYPTION_OPTS));
 };
