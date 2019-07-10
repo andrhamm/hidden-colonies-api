@@ -27,7 +27,7 @@ custom:
     includeModules:
       forceExclude:
         - aws-sdk
-  dynamodb_table_name_games: ${self:service.name}-${self:provider.stage}-games-2
+  dynamodb_table_name_games: ${self:service.name}-${self:provider.stage}-games-3
   dynamodb_index_name_games_opponent: opponent
   # dynamodb_index_name_games_room: ${self:custom.dynamodb_table_name_games}-by-room
   arn_prefix_lambda_function: arn:aws:lambda:#{AWS::Region}:#{AWS::AccountId}:function:${self:service.name}-${self:provider.stage}
@@ -67,6 +67,7 @@ provider:
     SIGNING_KEY: ${file(./secrets.${self:provider.stage}.yml):signingKey}
     DYNAMODB_PARTITION_COUNT_GAMES: 4
     DYNAMODB_TABLE_NAME_GAMES: ${self:custom.dynamodb_table_name_games}
+    DYNAMODB_INDEX_NAME_GAMES_OPPONENT: ${self:custom.dynamodb_index_name_games_opponent}
     COGNITO_USER_POOL_ID: !Ref CognitoUserPool
   iamRoleStatements:
     - Effect: Allow
@@ -122,7 +123,7 @@ functions:
     description: Create a new game
     events:
       - http:
-          path: game
+          path: games
           method: post
           cors: ${file(api/cors.yml)}
           authorizer: aws_iam
@@ -141,7 +142,7 @@ functions:
     description: Retreive a game by ID
     events:
       - http:
-          path: game/{id}
+          path: games/{id}
           method: get
           cors: ${file(api/cors.yml)}
           authorizer: aws_iam
@@ -152,12 +153,32 @@ functions:
         Resource:
           - Fn::GetAtt: [ GamesDynamoDbTable, Arn ]
 
+  gameList:
+    handler: handlers/game.list
+    description: Retreive all recent games
+    events:
+      - http:
+          path: games
+          method: get
+          cors: ${file(api/cors.yml)}
+          authorizer: aws_iam
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:Query
+        Resource:
+          - Fn::GetAtt: [ GamesDynamoDbTable, Arn ]
+          - Fn::Join:
+            - ""
+            - - Fn::GetAtt: [ GamesDynamoDbTable, Arn ]
+              - "/index/${self:custom.dynamodb_index_name_games_opponent}"
+
   turnCreate:
     handler: handlers/turn.post
     description: Submit a new turn for a game
     events:
       - http:
-          path: game/{id}/turn
+          path: games/{id}/turn
           method: post
           cors: ${file(api/cors.yml)}
           authorizer: aws_iam
@@ -185,22 +206,39 @@ resources:
           - AttributeName: partitionKey
             AttributeType: S
           - AttributeName: sortKey
-            AttributeType: N
+            AttributeType: S
+          - AttributeName: opponentPartitionKey
+            AttributeType: S
+          - AttributeName: opponentSortKey
+            AttributeType: S
         KeySchema:
-          # `${[player1Guid, player2Guid].sort().join(':')}`
-          # exmaple: b6971e08-5c31-41b0-b061-482b41c98460:f5df8afe-b6bd-4498-a26c-bb5c1d587cc8
+          # `${player1Guid}`
+          # exmaple: b6971e08-5c31-41b0-b061-482b41c98460
           - AttributeName: partitionKey
             KeyType: HASH
-          # `${gameStartTimeMs}`
+          # `${[player2Guid, gameStartTimeMs].join(':')}`
           - AttributeName: sortKey
             KeyType: RANGE
-        # GlobalSecondaryIndexes:
-        #   - IndexName: ${self:custom.dynamodb_index_name_games_room}
-        #     KeySchema:
-        #       - AttributeName: room
-        #         KeyType: HASH
-        #     Projection:
-        #       ProjectionType: KEYS_ONLY
+        GlobalSecondaryIndexes:
+          - IndexName: ${self:custom.dynamodb_index_name_games_opponent}
+            KeySchema:
+              # `${player2Guid}`
+              # exmaple: f5df8afe-b6bd-4498-a26c-bb5c1d587cc8
+              - AttributeName: opponentPartitionKey
+                KeyType: HASH
+              # `${[player1Guid, gameStartTimeMs].join(':')}`
+              - AttributeName: opponentSortKey
+                KeyType: RANGE
+            Projection:
+              ProjectionType: INCLUDE
+              NonKeyAttributes:
+                - id
+                - turn
+                - firstPlayer
+                - players
+                - createdAt
+                - updatedAt
+                - completedAt
     CognitoUserPool:
       Type: AWS::Cognito::UserPool
       Properties:

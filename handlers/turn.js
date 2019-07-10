@@ -2,8 +2,9 @@ import { dynamodb, dynamodbMarshall, dynamodbUnmarshall } from '../lib/aws-clien
 import {
   loadGame, sanitizeGame, getPlayerIndex, isMyTurn,
 } from '../lib/common';
+import { getCurrentUserSub } from '../lib/cognito';
 import { simpleError, simpleResponse } from '../lib/api';
-import { isWagerCard } from '../lib/deck';
+import { validPlay } from '../lib/deck';
 
 const {
   DYNAMODB_TABLE_NAME_GAMES,
@@ -23,9 +24,11 @@ export const post = async (event) => {
     return simpleError(event, 415, 'Invalid content-type. Must begin with "application/json"');
   }
 
-  const timestamp = event.requestContext.requestTimeEpoch;
+  const { id: encryptedId } = event.pathParameters;
 
-  const game = await loadGame(event, {
+  const uuid = getCurrentUserSub(event);
+
+  const game = await loadGame(encryptedId, uuid, {
     DYNAMODB_TABLE_NAME_GAMES,
     ...ENCRYPTION_OPTS,
   });
@@ -39,16 +42,16 @@ export const post = async (event) => {
     sortKey,
   } = game;
 
-  const { turn: turnIn, action } = JSON.parse(event.body);
+  const { turn: turnIn, action, draw: drawIn } = JSON.parse(event.body);
 
   if (turn !== turnIn) {
     return simpleError(event, 400, 'Invalid turn number specified.');
   }
 
-  const playerIndex = getPlayerIndex(event, game);
+  const playerIdx = getPlayerIndex(event, game);
 
   // validate it is this player's turn
-  if (!isMyTurn(turn, firstPlayer, playerIndex)) {
+  if (!isMyTurn(turn, firstPlayer, playerIdx)) {
     return simpleError(event, 400, 'It is not your turn.');
   }
 
@@ -60,58 +63,62 @@ export const post = async (event) => {
     return simpleError(event, 400, 'Invalid turn action specified.');
   }
 
-  const {
+  /* eslint-disable prefer-const */
+  let {
     1: playOrDiscard,
     2: actionCard,
-    3: actionCardCategory,
-    4: actionCardCardId,
+    3: actionCardSuitIdx,
+    4: actionCardCardIdx,
     6: drawCard,
-    7: drawCardCategory,
+    7: drawCardSuitIdx,
+    8: _drawCardIdx,
   } = match;
 
+  if (drawIn) {
+    drawCard = drawIn;
+    ([_drawCardIdx, drawCardSuitIdx] = drawIn);
+  }
+  /* eslint-enable prefer-const */
+
   // validate actionCard is in current hand
-  const actionCardHandIndex = cards.hands[playerIndex].findIndex(card => card === actionCard);
+  const actionCardHandIndex = cards.hands[playerIdx].findIndex(card => card === actionCard);
   if (actionCardHandIndex === -1) {
     return simpleError(event, 400, 'Invalid action card specified. Not in hand.');
   }
 
-  cards.hands[playerIndex].splice(actionCardHandIndex, 1);
+  cards.hands[playerIdx].splice(actionCardHandIndex, 1);
 
   if (playOrDiscard === 'P') {
     // validate the card can be played
-    const [_topCardCategory, topCardCardId] = (cards.played[playerIndex][actionCardCategory][0] || '').split(':');
-
-    if (topCardCardId !== undefined) {
-      if ((isWagerCard(actionCardCardId) && !isWagerCard(topCardCardId))
-        || actionCardCardId < topCardCardId
-      ) {
-        return simpleError(event, 400, 'Invalid action card specified. Destination prohibited.');
-      }
+    if (!validPlay([actionCardSuitIdx, actionCardCardIdx], cards.played[playerIdx])) {
+      return simpleError(event, 400, 'Invalid action card specified. Destination prohibited.');
     }
 
-    cards.played[playerIndex].unshift(actionCard);
+    cards.played[playerIdx][actionCardSuitIdx].unshift(actionCard);
   } else {
-    cards.discarded[actionCardCategory].unshift(actionCard);
+    cards.discarded[actionCardSuitIdx].unshift(actionCard);
   }
 
-  // validate drawCard is on top of its category's discard pile
+  // validate drawCard is on top of its suit's discard pile
   let drawnCard;
   if (drawCard) {
-    const topDiscard = cards.discarded[drawCardCategory][0];
+    const topDiscard = cards.discarded[drawCardSuitIdx][0];
     if (topDiscard !== drawCard) {
       return simpleError(event, 400, 'Invalid draw card specified.');
     }
-    drawnCard = cards.discarded[drawCardCategory].shift();
+    drawnCard = cards.discarded[drawCardSuitIdx].shift();
   } else {
     // draw from deck
     drawnCard = cards.deck.shift();
   }
 
-  cards.hands[playerIndex].push(drawnCard);
+  cards.hands[playerIdx].push(drawnCard);
+
+  const timestamp = event.requestContext.requestTimeEpoch;
 
   // add this turn to turns array
-  turns.unshift({
-    player: playerIndex,
+  turns.push({
+    player: playerIdx,
     action,
     createdAt: timestamp,
   });
@@ -161,7 +168,7 @@ export const post = async (event) => {
   return simpleResponse(
     event,
     {
-      ...sanitizeGame(gameUpdated, playerIndex, ENCRYPTION_OPTS),
+      ...sanitizeGame(gameUpdated, uuid, ENCRYPTION_OPTS),
       drawnCard,
     },
   );

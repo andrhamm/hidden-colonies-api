@@ -5,7 +5,7 @@
 ```
 Accept: application/json
 Content-Type: application/json
-POST /game
+POST /games
 { "opponent": "andrhamm" }
 ```
 
@@ -15,23 +15,36 @@ Where `opponent` is a valid username for an existing user.
 
 ```
 Accept: application/json
-GET /game/{id}
+GET /games/{id}
 ```
+
+## Fetch recent games
+
+```
+Accept: application/json
+GET /games
+```
+
+The response contains truncated game objects.
 
 ## Submit a turn
 
 ```
 Accept: application/json
 Content-Type: application/json
-POST /game/{id}/turn
-{"action":"P0:3", "turn":0}
+POST /games/{id}/turn
+{"action":"P0:3", "draw": "4:1", "turn":0}
 ```
 
 Client should first fetch the game to refresh the state. Turns can be submitted when `isMyTurn` is `true` and until `completedAt` is non-null.
 
-Where `action` starts with `P` when playing or `D` when discarding, followed by the card to play or discard, optionally followed by `::` and an already discarded card to draw (otherwise draw is from the deck). When drawing from a discard pile, only the most recently discarded card from each category can be chosen.
+Where `action` is the value from the `actionPlay` or `actionDiscard` properties from a card in the player's hand. If `actionPlay` property is missing or null, it means card cannot be played this turn.
+
+Where `draw` (optional) is the value from the `draw` property from the top card of a discard pile. Omitting `draw` results in drawing from the deck. The `draw` property is missing or null from all but the first card in the `discarded` arrays, this means the card can not be drawn this turn.
 
 Where `turn` is the value from the recently fetched version of the game.
+
+---
 
 # TODO
 
