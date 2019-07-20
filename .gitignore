@@ -4,3 +4,4 @@ app/node_modules/
 .webpack
 secrets.*.yml
 secrets.*.yaml
+app/

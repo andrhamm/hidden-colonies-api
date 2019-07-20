@@ -1,5 +1,6 @@
 import nanoidLocaleEn from 'nanoid-good/locale/en';
 
+import FunctionShield from '@puresec/function-shield';
 import { dealNewGame } from '../lib/deck';
 import { dynamodb, dynamodbMarshall } from '../lib/aws-clients';
 import {
@@ -9,12 +10,6 @@ import { simpleError, simpleResponse } from '../lib/api';
 import {
   loadGame, loadGameByEncryptedKey, loadGames, sanitizeGame, sanitizeGameList,
 } from '../lib/common';
-
-// const nanoid = require('nanoid-good')(nanoidLocaleEn);
-const nanoidGenerate = require('nanoid-good/generate')(nanoidLocaleEn);
-
-const nanoidAlphabet = '23456789abcdefghijkmnpqrstwxyz';
-const nanoidLength = 16;
 /* See https://zelark.github.io/nano-id-cc/
  * with this alphabet and length...
  * generating 1 ID/second... ~3k years needed to have 1% probability of at least one collision
@@ -22,6 +17,24 @@ const nanoidLength = 16;
  * 100 ID/s = ~29 years
  * TODO: increase length when we go viral :P
 * */
+
+
+// const nanoid = require('nanoid-good')(nanoidLocaleEn);
+const nanoidGenerate = require('nanoid-good/generate')(nanoidLocaleEn);
+
+const nanoidAlphabet = '23456789abcdefghijkmnpqrstwxyz';
+const nanoidLength = 16;
+
+FunctionShield.configure(
+  {
+    policy: {
+      outbound_connectivity: 'block',
+      read_write_tmp: 'block',
+      create_child_process: 'block',
+    },
+    token: process.env.FUNCTION_SHIELD_TOKEN,
+  },
+);
 
 const {
   COGNITO_USER_POOL_ID,
@@ -48,7 +61,9 @@ export const post = async (event) => {
 
   const uuid = getCurrentUserSub(event);
 
-  const { opponent: opponentUsername } = JSON.parse(event.body);
+  let { opponent: opponentUsername, liveScoring } = JSON.parse(event.body);
+
+  liveScoring = !!liveScoring;
 
   const [user, opponentUser] = await Promise.all([
     getUserBySub(COGNITO_USER_POOL_ID, uuid),
@@ -106,6 +121,9 @@ export const post = async (event) => {
     firstPlayer,
     turns: [],
     cards,
+    settings: {
+      liveScoring,
+    },
     createdAt: timestamp,
   };
 

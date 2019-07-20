@@ -30,12 +30,16 @@ custom:
   dynamodb_table_name_games: ${self:service.name}-${self:provider.stage}-games-3
   dynamodb_index_name_games_id: gameId
   dynamodb_index_name_games_opponent: opponent
+  dynamodb_table_name_users: ${self:service.name}-${self:provider.stage}-users
   # dynamodb_index_name_games_room: ${self:custom.dynamodb_table_name_games}-by-room
   arn_prefix_lambda_function: arn:aws:lambda:#{AWS::Region}:#{AWS::AccountId}:function:${self:service.name}-${self:provider.stage}
-  arn_api_gateway_rest_api:
+  arn_api_gateway_connections:
     Fn::Join:
       - "/"
-      - - Fn::Join: [":", ["arn:aws:execute-api", {"Ref":"AWS::Region"}, {"Ref":"AWS::AccountId"}, {"Ref": "ApiGatewayRestApi"}, "${self:provider.stage}"]]
+      - - Fn::Join: [":", ["arn:aws:execute-api", {"Ref":"AWS::Region"}, {"Ref":"AWS::AccountId"}, {"Ref": "WebsocketsApi"}]]
+        - ${self:provider.stage}
+        - "*"
+        - "@connections"
         - "*"
   cognito_user_pool_arn:
     Fn::Join:
@@ -63,21 +67,26 @@ provider:
       Fn::Join:
         - ""
         - - Ref: ApiGatewayRestApi
-          - ".execute-api.${self:provider.region}.amazonaws.com/${self:provider.stage}"
+          - ".execute-api.${self:provider.region}."
+          - Ref: AWS::URLSuffix
+          - "/${self:provider.stage}"
+    WSS_BASE:
+      Fn::Join:
+        - ""
+        - - Ref: WebsocketsApi
+          - ".execute-api.${self:provider.region}."
+          - Ref: AWS::URLSuffix
+          - "/${self:provider.stage}"
     ENCRYPTION_KEY: ${file(./secrets.${self:provider.stage}.yml):encryptionKey}
     SIGNING_KEY: ${file(./secrets.${self:provider.stage}.yml):signingKey}
+    FUNCTION_SHIELD_TOKEN: ${file(./secrets.${self:provider.stage}.yml):functionShieldToken}
     DYNAMODB_PARTITION_COUNT_GAMES: 4
     DYNAMODB_TABLE_NAME_GAMES: ${self:custom.dynamodb_table_name_games}
     DYNAMODB_INDEX_NAME_GAMES_ID: ${self:custom.dynamodb_index_name_games_id}
     DYNAMODB_INDEX_NAME_GAMES_OPPONENT: ${self:custom.dynamodb_index_name_games_opponent}
+    DYNAMODB_TABLE_NAME_USERS: ${self:custom.dynamodb_table_name_users}
     COGNITO_USER_POOL_ID: !Ref CognitoUserPool
   iamRoleStatements:
-    - Effect: Allow
-      Action:
-        - execute-api:ManageConnections
-      Resource:
-        - "arn:aws:execute-api:*:*:**/@connections/*"
-        # - "arn:aws:execute-api:#{AWS::Region}:#{AWS::AccountId}:#{!Ref ApiGatewayRestApi}/${self:provider.stage}/*"
     - Effect: Allow
       Action:
         - cognito-idp:ListUsers
@@ -90,26 +99,73 @@ package:
     - secrets.*.yml
 
 functions:
-  # websocketAuth:
-  #   handler: handlers/websockets-auth.handler
-  # websocketDefault:
-  #   handler: handlers/websockets.routeDefault
-  #   events:
-  #     - websocket: $default
-  # websocketDisconnect:
-  #   handler: handlers/websockets.routeDisconnect
-  #   events:
-  #     - websocket: $disconnect
-  # websocketConnect:
-  #   handler: handlers/websockets.routeConnect
-  #   events:
-  #     - websocket:
-  #         route: $connect
-  #         authorizer:
-  #           name: websocketAuth
-  #           identitySource:
-  #             - 'route.request.header.Auth'
-  #             - 'route.request.querystring.auth'
+  getWebsocketConnectToken:
+    handler: handlers/websockets-auth.getToken
+    description: Retreive a token that can be used to authenticate the websocket connection
+    events:
+      - http:
+          path: token
+          method: get
+          cors: ${file(api/cors.yml)}
+          authorizer: aws_iam
+  websocketDefault:
+    handler: handlers/websockets.routeDefault
+    events:
+      - websocket: $default
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - execute-api:ManageConnections
+          - execute-api:Invoke
+        Resource:
+          - ${self:custom.arn_api_gateway_connections}
+      - Effect: Allow
+        Action:
+          - dynamodb:BatchGetItem
+        Resource:
+          - Fn::GetAtt: [ UsersDynamoDbTable, Arn ]
+  websocketDisconnect:
+    handler: handlers/websockets.routeDisconnect
+    events:
+      - websocket: $disconnect
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - execute-api:ManageConnections
+          - execute-api:Invoke
+        Resource:
+          - ${self:custom.arn_api_gateway_connections}
+      - Effect: Allow
+        Action:
+          - dynamodb:GetItem
+          - dynamodb:UpdateItem
+          - dynamodb:DeleteItem
+        Resource:
+          - Fn::GetAtt: [ UsersDynamoDbTable, Arn ]
+  websocketConnect:
+    handler: handlers/websockets.routeConnect
+    events:
+      - websocket:
+          route: $connect
+          authorizer:
+            name: websocketAuth
+            identitySource:
+              - 'route.request.querystring.token'
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - execute-api:ManageConnections
+          - execute-api:Invoke
+        Resource:
+          - ${self:custom.arn_api_gateway_connections}
+      - Effect: Allow
+        Action:
+          - dynamodb:PutItem
+          - dynamodb:UpdateItem
+        Resource:
+          - Fn::GetAtt: [ UsersDynamoDbTable, Arn ]
+  websocketAuth:
+    handler: handlers/websockets-auth.handler
 
   # test:
   #   handler: handlers/test.post
@@ -203,6 +259,19 @@ functions:
 
 resources:
   Resources:
+    UsersDynamoDbTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:custom.dynamodb_table_name_users}
+        BillingMode: PAY_PER_REQUEST
+        # StreamSpecification:
+        #   StreamViewType: NEW_AND_OLD_IMAGES
+        AttributeDefinitions:
+          - AttributeName: partitionKey
+            AttributeType: S
+        KeySchema:
+          - AttributeName: partitionKey
+            KeyType: HASH
     GamesDynamoDbTable:
       Type: AWS::DynamoDB::Table
       Properties:

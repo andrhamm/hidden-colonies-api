@@ -1,10 +1,10 @@
 import { dynamodb, dynamodbMarshall, dynamodbUnmarshall } from '../lib/aws-clients';
 import {
-  loadGameByEncryptedKey, sanitizeGame, getPlayerIndex, isMyTurn,
+  loadGameByEncryptedKey, sanitizeGame, getPlayerIndex, isMyTurn, getScoring,
 } from '../lib/common';
 import { getCurrentUserSub } from '../lib/cognito';
 import { simpleError, simpleResponse } from '../lib/api';
-import { validPlay } from '../lib/deck';
+import { validPlay, sortCardsForDisplay } from '../lib/deck';
 
 const {
   DYNAMODB_TABLE_NAME_GAMES,
@@ -41,6 +41,10 @@ export const post = async (event) => {
     partitionKey,
     sortKey,
   } = game;
+
+  if (cards.deck.length < 1) {
+    return simpleError(event, 400, 'Game over!');
+  }
 
   const { turn: turnIn, action, draw: drawIn } = JSON.parse(event.body);
 
@@ -114,6 +118,8 @@ export const post = async (event) => {
 
   cards.hands[playerIdx].push(drawnCard);
 
+  cards.hands = cards.hands.map(sortCardsForDisplay);
+
   const timestamp = event.requestContext.requestTimeEpoch;
 
   // add this turn to turns array
@@ -123,7 +129,35 @@ export const post = async (event) => {
     createdAt: timestamp,
   });
 
-  // TODO: return score, winner
+  let expressionAttrVals = {
+    ':cards': cards,
+    ':turn': turn,
+    ':turns': turns,
+    ':ts': timestamp,
+    ':one': 1,
+  };
+  let updateExpression = 'SET turn = :turn + :one, cards = :cards, turns = :turns, updatedAt = :ts, completedAt = :ts';
+
+  // game over, return score, winner
+  const gameOver = cards.deck.length < 1;
+
+  if (gameOver) {
+    const {
+      winner,
+      scores,
+    } = getScoring(cards, true);
+
+    console.log(`Game over, winner is player ${winner} (${scores.toString()})`);
+
+    expressionAttrVals = {
+      ...expressionAttrVals,
+      ':winner': winner,
+      ':scores': scores,
+      ':score': scores[0],
+      ':opponentScore': scores[1],
+    };
+    updateExpression += ', winner = :winner, scores = :scores, score = :score, opponentScore = :opponentScore';
+  }
 
   // update card positions, update turn number
   console.log('Updating game...');
@@ -135,22 +169,20 @@ export const post = async (event) => {
         partitionKey,
         sortKey,
       }),
-      ExpressionAttributeNames: {
-        '#CARDS': 'cards',
-        '#TURN': 'turn',
-        '#TURNS': 'turns',
-        '#UP': 'updatedAt',
-        '#END': 'completedAt',
-      },
-      ExpressionAttributeValues: dynamodbMarshall({
-        ':cards': cards,
-        ':turn': turn,
-        ':turns': turns,
-        ':ts': timestamp,
-        ':one': 1,
-      }),
-      UpdateExpression: 'SET #TURN = :turn + :one, #CARDS = :cards, #TURNS = :turns, #UP = :ts, #END = :ts',
-      ConditionExpression: '#TURN = :turn',
+      // ExpressionAttributeNames: {
+      //   '#CARDS': 'cards',
+      //   '#TURN': 'turn',
+      //   '#TURNS': 'turns',
+      //   '#UP': 'updatedAt',
+      //   '#END': 'completedAt',
+      //   ...gameOver && {
+      //     '#SCORES': 'scores',
+      //     '#SCORE'
+      //   },
+      // },
+      ExpressionAttributeValues: dynamodbMarshall(expressionAttrVals),
+      UpdateExpression: updateExpression,
+      ConditionExpression: 'turn = :turn',
       ReturnValues: 'ALL_NEW',
     }).promise());
   } catch (e) {
