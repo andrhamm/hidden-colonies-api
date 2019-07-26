@@ -1,29 +1,15 @@
-import nanoidLocaleEn from 'nanoid-good/locale/en';
 
 import FunctionShield from '@puresec/function-shield';
 import { dealNewGame } from '../lib/deck';
 import { dynamodb, dynamodbMarshall } from '../lib/aws-clients';
 import {
-  getCurrentUserSub, getUserByUsername, getUserAttribute, getUserBySub,
+  getCurrentUserSub, getUserByUsername, getUserAttribute, getUserBySub, updateUser,
 } from '../lib/cognito';
-import { simpleError, simpleResponse } from '../lib/api';
+import { simpleError, simpleResponse, HiddenColoniesError } from '../lib/api';
 import {
   loadGame, loadGameByEncryptedKey, loadGames, sanitizeGame, sanitizeGameList,
+  isValidGameId, generateId,
 } from '../lib/common';
-/* See https://zelark.github.io/nano-id-cc/
- * with this alphabet and length...
- * generating 1 ID/second... ~3k years needed to have 1% probability of at least one collision
- * 10 ID/s = ~295 years
- * 100 ID/s = ~29 years
- * TODO: increase length when we go viral :P
-* */
-
-
-// const nanoid = require('nanoid-good')(nanoidLocaleEn);
-const nanoidGenerate = require('nanoid-good/generate')(nanoidLocaleEn);
-
-const nanoidAlphabet = '23456789abcdefghijkmnpqrstwxyz';
-const nanoidLength = 16;
 
 FunctionShield.configure(
   {
@@ -41,6 +27,7 @@ const {
   DYNAMODB_TABLE_NAME_GAMES,
   DYNAMODB_INDEX_NAME_GAMES_OPPONENT,
   DYNAMODB_INDEX_NAME_GAMES_ID,
+  DYNAMODB_TABLE_NAME_USERS,
   ENCRYPTION_KEY,
   SIGNING_KEY,
 } = process.env;
@@ -61,6 +48,7 @@ export const post = async (event) => {
 
   const uuid = getCurrentUserSub(event);
 
+  // eslint-disable-next-line prefer-const
   let { opponent: opponentUsername, liveScoring } = JSON.parse(event.body);
 
   liveScoring = !!liveScoring;
@@ -78,8 +66,18 @@ export const post = async (event) => {
     return simpleError(event, 401, 'User not found.');
   }
 
+  const emailVerified = getUserAttribute(user, 'email_verified') === 'true';
+  if (!emailVerified) {
+    return simpleError(event, 409, 'You have not verified your account.');
+  }
+
   if (!opponentUser) {
     return simpleError(event, 400, 'Opponent not found.');
+  }
+
+  const opponentEmailVerified = getUserAttribute(opponentUser, 'email_verified') === 'true';
+  if (!opponentEmailVerified) {
+    return simpleError(event, 409, 'Opponent has not verified their account.');
   }
 
   const opponentUuid = getUserAttribute(opponentUser, 'sub');
@@ -87,6 +85,12 @@ export const post = async (event) => {
   if (uuid === opponentUuid) {
     return simpleError(event, 400, 'Invalid opponent.');
   }
+
+  const userName = getUserAttribute(user, 'name');
+  const userEmail = getUserAttribute(user, 'email');
+  const opponentName = getUserAttribute(opponentUser, 'name');
+  const opponentEmail = getUserAttribute(opponentUser, 'email');
+
 
   // TODO: validate no other active game with this opponent
 
@@ -99,7 +103,7 @@ export const post = async (event) => {
 
   const key = `${partitionKey}::${sortKey}`;
 
-  const id = nanoidGenerate(nanoidAlphabet, nanoidLength);
+  const id = generateId();
 
   const firstPlayer = Math.floor(Math.random() * 2);
 
@@ -119,6 +123,7 @@ export const post = async (event) => {
   const gameCommon = {
     turn: 0,
     firstPlayer,
+    playerTurn: firstPlayer,
     turns: [],
     cards,
     settings: {
@@ -143,15 +148,27 @@ export const post = async (event) => {
     ...gameSecret,
   };
 
-  await dynamodb.putItem({
-    TableName: DYNAMODB_TABLE_NAME_GAMES,
-    ExpressionAttributeNames: {
-      '#SORT': 'sortKey',
-    },
-    Item: dynamodbMarshall(game),
-    ConditionExpression: 'attribute_not_exists(#SORT)',
-    // ReturnValues only supports ALL_OLD or NONE for putItem
-  }).promise();
+  await Promise.all([
+    dynamodb.putItem({
+      TableName: DYNAMODB_TABLE_NAME_GAMES,
+      ExpressionAttributeNames: {
+        '#SORT': 'sortKey',
+      },
+      Item: dynamodbMarshall(game),
+      ConditionExpression: 'attribute_not_exists(#SORT)',
+      // ReturnValues only supports ALL_OLD or NONE for putItem
+    }).promise(),
+    updateUser(opponentUuid, {
+      email: opponentEmail,
+      name: opponentName,
+      username: opponentUsername,
+    }, { DYNAMODB_TABLE_NAME_USERS }),
+    updateUser(uuid, {
+      email: userEmail,
+      name: userName,
+      username: user.Username,
+    }, { DYNAMODB_TABLE_NAME_USERS }),
+  ]);
 
   return simpleResponse(event, sanitizeGame(game, uuid, ENCRYPTION_OPTS));
 };
@@ -163,18 +180,20 @@ export const get = async (event) => {
 
   const { idOrEncryptedKey } = event.pathParameters;
 
-  const idPattern = new RegExp(`^[${nanoidAlphabet}]{${nanoidLength}}$`);
+  const loadFn = isValidGameId(idOrEncryptedKey) ? loadGame : loadGameByEncryptedKey;
 
-  const loadFn = idOrEncryptedKey.match(idPattern) ? loadGame : loadGameByEncryptedKey;
-
-  const game = await loadFn(idOrEncryptedKey, uuid, {
-    DYNAMODB_TABLE_NAME_GAMES,
-    DYNAMODB_INDEX_NAME_GAMES_ID,
-    ...ENCRYPTION_OPTS,
-  });
-
-  if (!game) {
-    return simpleError(event, 404, 'Game not found.');
+  let game;
+  try {
+    game = await loadFn(idOrEncryptedKey, uuid, {
+      DYNAMODB_TABLE_NAME_GAMES,
+      DYNAMODB_INDEX_NAME_GAMES_ID,
+      ...ENCRYPTION_OPTS,
+    });
+  } catch (e) {
+    if (e instanceof HiddenColoniesError) {
+      return e.toAPIResponse(event);
+    }
+    throw e;
   }
 
   return simpleResponse(event, sanitizeGame(game, uuid, ENCRYPTION_OPTS));

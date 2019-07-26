@@ -108,7 +108,6 @@ Note: max length of `msg` is 140 chars, like an OG tweet. Number of messages and
   "data": {
     "game.key": `${GAME_KEY}`,
     "msg": "Hello World",
-    "msg.id": "{client-generated unique id for this message}"
   },
 }
 ```
@@ -162,12 +161,13 @@ Note: you will receive these events only for own messages. Failure to heed the r
 
 ## EVENT: an opponent has finished their turn for a game (WIP)
 
-Note: you will receive these events only when your opponent finishes their turns. The `game.id` should be used to find the game `key`, which should then be used to do a fetch for the updated game state.
+Note: you will receive these events only when your opponent finishes their turns. The `game.id` should be used to find the game `key`, which should then be used to do a fetch for the updated game state. Clients should take care to only act on messages that are relevant based on the timestamp (`ts`) or other fields. For example, don't display a turn notification if a message is received for a turn that has already been surpassed.
 
 ```
 {
   "event": "newGameTurn",
   "data": {
+    "isInvite": false,
     "game.id": "59gh2bkngpf3qez8",
   },
   "ts": 1562807525476,

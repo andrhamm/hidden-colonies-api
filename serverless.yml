@@ -60,6 +60,7 @@ provider:
   logs:
     restApi: true
     # websocket: true
+  websocketsApiRouteSelectionExpression: $request.body.action
   environment:
     # NOTE: this is useful for local invocations and has no affect in deployed environments
     AWS_PROFILE: ${self:provider.profile}
@@ -86,6 +87,7 @@ provider:
     DYNAMODB_INDEX_NAME_GAMES_OPPONENT: ${self:custom.dynamodb_index_name_games_opponent}
     DYNAMODB_TABLE_NAME_USERS: ${self:custom.dynamodb_table_name_users}
     COGNITO_USER_POOL_ID: !Ref CognitoUserPool
+    SES_EMAIL_DOMAIN: ${self:custom.domain}
   iamRoleStatements:
     - Effect: Allow
       Action:
@@ -194,6 +196,11 @@ functions:
           - dynamodb:PutItem
         Resource:
           - Fn::GetAtt: [ GamesDynamoDbTable, Arn ]
+      - Effect: Allow
+        Action:
+          - dynamodb:UpdateItem
+        Resource:
+          - Fn::GetAtt: [ UsersDynamoDbTable, Arn ]
 
   gameRead:
     handler: handlers/game.get
@@ -257,6 +264,57 @@ functions:
         Resource:
           - Fn::GetAtt: [ GamesDynamoDbTable, Arn ]
 
+  wsTurnCompleted:
+    description: Sends websocket events when a turn has completed
+    handler: handlers/ws-turn-completed.handler
+    events:
+      - stream:
+          type: dynamodb
+          arn:
+            Fn::GetAtt: [ GamesDynamoDbTable, StreamArn ]
+          batchSize: 100
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - execute-api:ManageConnections
+          - execute-api:Invoke
+        Resource:
+          - ${self:custom.arn_api_gateway_connections}
+      - Effect: Allow
+        Action:
+          - dynamodb:BatchGetItem
+        Resource:
+          - Fn::GetAtt: [ UsersDynamoDbTable, Arn ]
+
+  wsChatReceived:
+    description: Writes chat messages to DynamoDB
+    handler: handlers/ws-chat-received.handler
+    events:
+      - websocket:
+          route: sendGameChat
+          request:
+            schema:
+              application/json: ${file(api/game-create.json)}
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - execute-api:ManageConnections
+          # - execute-api:Invoke
+        Resource:
+          - ${self:custom.arn_api_gateway_connections}
+      - Effect: Allow
+        Action:
+          - dynamodb:UpdateItem
+          - dynamodb:GetItem
+        Resource:
+          - Fn::GetAtt: [ GamesDynamoDbTable, Arn ]
+      - Effect: Allow
+        Action:
+          - dynamodb:GetItem
+          - dynamodb:BatchGetItem
+        Resource:
+          - Fn::GetAtt: [ UsersDynamoDbTable, Arn ]
+
 resources:
   Resources:
     UsersDynamoDbTable:
@@ -270,6 +328,8 @@ resources:
           - AttributeName: partitionKey
             AttributeType: S
         KeySchema:
+          # user exmaple: u:b6971e08-5c31-41b0-b061-482b41c98460
+          # connection exmaple: c:dFiR-fGeoAMCIUw=
           - AttributeName: partitionKey
             KeyType: HASH
     GamesDynamoDbTable:

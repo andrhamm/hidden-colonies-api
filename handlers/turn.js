@@ -59,6 +59,9 @@ export const post = async (event) => {
     return simpleError(event, 400, 'It is not your turn.');
   }
 
+  // next player's turn
+  const playerTurn = playerIdx === 0 ? 1 : 0;
+
   // validate action
   const actionPattern = new RegExp(/^(P|D)(([0-4]):([0-9]|1[01]))(::(([0-4]):([0-9]|1[01])))?$/);
   const match = action.match(actionPattern);
@@ -124,19 +127,21 @@ export const post = async (event) => {
 
   // add this turn to turns array
   turns.push({
+    turn,
     player: playerIdx,
     action,
     createdAt: timestamp,
   });
 
   let expressionAttrVals = {
+    ':playerTurn': playerTurn,
     ':cards': cards,
     ':turn': turn,
     ':turns': turns,
     ':ts': timestamp,
     ':one': 1,
   };
-  let updateExpression = 'SET turn = :turn + :one, cards = :cards, turns = :turns, updatedAt = :ts, completedAt = :ts';
+  let updateExpression = 'SET turn = :turn + :one, cards = :cards, turns = :turns, playerTurn = :playerTurn, updatedAt = :ts, completedAt = :ts';
 
   // game over, return score, winner
   const gameOver = cards.deck.length < 1;
