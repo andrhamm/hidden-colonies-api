@@ -69,7 +69,6 @@ GET /token
 
 The response will be `HTTP Status: 204 No Content` (no body) and the token will be in the `X-HC-Token` header.
 
-
 # Websockets
 
 ## Connect
@@ -178,13 +177,28 @@ Note: you will receive these events only when your opponent finishes their turns
 
 # TODO
 
-* signing of response secrets (meh)
-* websockets / email / browser / push notifications
+- fix case sensitive usernames
+- implement dependency injection / IoC w/ [awilix](https://github.com/jeffijoe/awilix)
+- structured loggingw w/ [log4js](https://github.com/log4js-node/log4js-node)
+- signing of response secrets (meh)
+- ~websockets~ / email / browser / push notifications
+- use a json diff/patching lib to send patch responses instead of full game state payloads (in websockets and/or http)
+  - see [immer](https://github.com/immerjs/immer) and [is postMessage slow?](https://dassur.ma/things/is-postmessage-slow/)
+- email confirmation as link instead of code
 
 # IDEAS
 
-* "game server" concept
-  * secret url that lists other users and the leaderboard for all games originating from the server
-  * brackets / tournaments
-* optionally enable realtime score visibility (off by default)
-* AI opponent
+- "game server" concept
+  - secret url that lists other users and the leaderboard for all games originating from the server
+  - brackets / tournaments
+- optionally enable realtime score visibility (off by default)
+- AI opponent
+
+
+
+
+---
+
+### Notes on IoC
+
+* Repository: that is used to retrieve data from a datasource - the actual data source does not matter. Could be a database, a REST API, or some IoT things like sensors or whatever.
